@@ -83,7 +83,7 @@ class KeystoreRepository(context: Context) {
 
     private fun getVaultKey(): CharArray {
         val base64Blob = prefs.getString(VAULT_KEY_PREF, null)
-            ?: throw IllegalStateException("Vault corrupted: Master Seed missing.")
+            ?: throw IllegalStateException("密钥库已损坏：缺少主种子。")
 
         val blob = Base64.decode(base64Blob, Base64.NO_WRAP)
 
@@ -168,11 +168,13 @@ class KeystoreRepository(context: Context) {
 
     fun renameEntry(oldAlias: String, newAlias: String): Boolean {
         if (oldAlias == newAlias) return true
+        // 目标名称已存在时拒绝重命名，避免静默覆盖已有密钥
+        if (prefs.contains("DATA_$newAlias")) return false
 
         val secretString = loadFromVault(oldAlias) ?: return false
         val secretChars = secretString.toCharArray()
         val score = prefs.getInt("SCORE_$oldAlias", 0)
-        val label = prefs.getString("LABEL_$oldAlias", "Unknown") ?: "Unknown"
+        val label = prefs.getString("LABEL_$oldAlias", "未知") ?: "未知"
 
         saveToVault(newAlias, secretChars, score, label)
 
@@ -192,7 +194,7 @@ class KeystoreRepository(context: Context) {
                     alias = alias,
                     timestamp = prefs.getLong("TIME_$alias", 0L),
                     strengthScore = prefs.getInt("SCORE_$alias", 0),
-                    strengthLabel = prefs.getString("LABEL_$alias", "") ?: ""
+                    strengthLabel = localizeLabel(prefs.getString("LABEL_$alias", "") ?: "")
                 )
             }
             .filterNotNull()
@@ -209,6 +211,17 @@ class KeystoreRepository(context: Context) {
     }
 
     // --- Helpers ---
+    // 历史数据里的强度标签是英文，这里仅在显示时转换，不改动已存储的数据
+    private fun localizeLabel(label: String): String = when (label) {
+        "Empty" -> "空"
+        "Weak" -> "弱"
+        "Fair" -> "一般"
+        "Strong" -> "强"
+        "Unbreakable" -> "极强"
+        "Unknown" -> "未知"
+        else -> label
+    }
+
     private fun toHex(bytes: ByteArray): CharArray {
         val hexChars = CharArray(bytes.size * 2)
         for (j in bytes.indices) {
