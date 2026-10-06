@@ -19,6 +19,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import java.security.SecureRandom
 import dev.animeshvarma.sigil.SigilViewModel
 import dev.animeshvarma.sigil.data.VaultEntry
 import dev.animeshvarma.sigil.ui.components.StyledLayerContainer
@@ -32,6 +35,7 @@ fun KeystoreScreen(viewModel: SigilViewModel) {
 
     KeystoreContent(
         entries = entries,
+        onAdd = { alias, secret -> viewModel.saveToVault(alias, secret) },
         onDelete = { viewModel.deleteFromVault(it) },
         onRename = { old, new -> viewModel.renameVaultEntry(old, new) },
         onView = { alias, callback -> viewModel.viewKey(alias, callback) },
@@ -42,6 +46,7 @@ fun KeystoreScreen(viewModel: SigilViewModel) {
 @Composable
 fun KeystoreContent(
     entries: List<VaultEntry>,
+    onAdd: (String, String) -> Unit,
     onDelete: (String) -> Unit,
     onRename: (String, String) -> Unit,
     onView: (String, (String?) -> Unit) -> Unit,
@@ -55,6 +60,15 @@ fun KeystoreContent(
     var renameText by remember { mutableStateOf("") }
     var revealedKey by remember { mutableStateOf("") }
 
+    var showAddDialog by remember { mutableStateOf(false) }
+    var addName by remember { mutableStateOf("") }
+    var addSecret by remember { mutableStateOf("") }
+    var addSecretVisible by remember { mutableStateOf(false) }
+
+    fun aliasTaken(name: String, except: String? = null): Boolean =
+        entries.any { it.alias.equals(name.trim(), ignoreCase = true) && it.alias != except }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
@@ -77,6 +91,12 @@ fun KeystoreContent(
                     Icon(Icons.Default.KeyOff, null, tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(48.dp))
                     Spacer(Modifier.height(8.dp))
                     Text("密钥库为空。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "点击右下角「＋」添加，或在加密页保存当前密钥。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
                 }
             }
         } else {
@@ -99,6 +119,77 @@ fun KeystoreContent(
         }
     }
 
+    FloatingActionButton(
+        onClick = {
+            addName = ""
+            addSecret = ""
+            addSecretVisible = false
+            showAddDialog = true
+        },
+        modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
+    ) { Icon(Icons.Default.Add, "添加密钥") }
+    }
+
+    if (showAddDialog) {
+        val nameTaken = addName.isNotBlank() && aliasTaken(addName)
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false; addSecret = "" },
+            icon = { Icon(Icons.Default.Key, null, tint = MaterialTheme.colorScheme.primary) },
+            title = { Text("添加密钥") },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = addName,
+                        onValueChange = { addName = it },
+                        label = { Text("名称") },
+                        singleLine = true,
+                        isError = nameTaken,
+                        supportingText = { if (nameTaken) Text("该名称已存在") },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = addSecret,
+                        onValueChange = { addSecret = it },
+                        label = { Text("密钥内容") },
+                        singleLine = true,
+                        visualTransformation = if (addSecretVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                        trailingIcon = {
+                            IconButton(onClick = { addSecretVisible = !addSecretVisible }) {
+                                Icon(
+                                    if (addSecretVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    if (addSecretVisible) "隐藏" else "显示"
+                                )
+                            }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    TextButton(onClick = {
+                        addSecret = generateRandomKey()
+                        addSecretVisible = true
+                    }) {
+                        Icon(Icons.Default.Refresh, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("随机生成（32 位）")
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = addName.isNotBlank() && addSecret.isNotEmpty() && !nameTaken,
+                    onClick = {
+                        onAdd(addName.trim(), addSecret)
+                        showAddDialog = false
+                        addSecret = ""
+                    }
+                ) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { showAddDialog = false; addSecret = "" }) { Text("取消") } }
+        )
+    }
+
     if (entryToDelete != null) {
         AlertDialog(
             onDismissRequest = { entryToDelete = null },
@@ -119,6 +210,7 @@ fun KeystoreContent(
     }
 
     if (entryToRename != null) {
+        val renameTaken = renameText.isNotBlank() && aliasTaken(renameText, except = entryToRename?.alias)
         AlertDialog(
             onDismissRequest = { entryToRename = null },
             icon = { Icon(Icons.Default.Edit, null) },
@@ -129,12 +221,14 @@ fun KeystoreContent(
                     onValueChange = { renameText = it },
                     label = { Text("新名称") },
                     singleLine = true,
+                    isError = renameTaken,
+                    supportingText = { if (renameTaken) Text("该名称已存在") },
                     shape = RoundedCornerShape(12.dp)
                 )
             },
             confirmButton = {
-                Button(onClick = {
-                    if (renameText.isNotBlank() && entryToRename != null) {
+                Button(enabled = !renameTaken, onClick = {
+                    if (renameText.isNotBlank() && entryToRename != null && !renameTaken) {
                         onRename(entryToRename!!.alias, renameText)
                         entryToRename = null
                     }
@@ -259,4 +353,14 @@ fun VaultItem(
             IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "删除", tint = MaterialTheme.colorScheme.error) }
         }
     }
+}
+
+
+private const val KEY_ALPHABET =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+[]{}"
+
+/** 使用 SecureRandom 生成随机密钥（约 200 位熵）。 */
+private fun generateRandomKey(length: Int = 32): String {
+    val rnd = SecureRandom()
+    return buildString(length) { repeat(length) { append(KEY_ALPHABET[rnd.nextInt(KEY_ALPHABET.length)]) } }
 }
