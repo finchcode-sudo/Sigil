@@ -821,11 +821,11 @@ class SigilViewModel(application: Application) : AndroidViewModel(application) {
     // --- VAULT OPERATIONS ---
     fun saveToVault(alias: String, password: String) {
         if (alias.isBlank()) {
-            addLog("Error: Key name cannot be empty.")
+            addLog("错误：密钥名称不能为空。")
             return
         }
         if (password.isEmpty()) {
-            addLog("Error: Cannot save empty key.")
+            addLog("错误：不能保存空密钥。")
             return
         }
 
@@ -837,7 +837,7 @@ class SigilViewModel(application: Application) : AndroidViewModel(application) {
                 val entropy = SecureMemory.calculateEntropy(password)
                 repository.saveToVault(alias, pwdChars, entropy.score, entropy.label)
                 refreshVault()
-                addLog("Key saved to Vault as '$alias'.")
+                addLog("密钥已保存到密钥库：「$alias」。")
             } finally {
                 SecureMemory.wipe(pwdChars)
                 _uiState.update { it.copy(isLoading = false) }
@@ -852,9 +852,9 @@ class SigilViewModel(application: Application) : AndroidViewModel(application) {
             val secret = repository.loadFromVault(entry.alias)
             if (secret != null) {
                 onPasswordChanged(secret)
-                addLog("Key '${entry.alias}' loaded.")
+                addLog("已载入密钥「${entry.alias}」。")
             } else {
-                addLog("Error: Failed to decrypt key.")
+                addLog("错误：密钥解密失败。")
             }
             _uiState.update { it.copy(isLoading = false) }
         }
@@ -865,7 +865,7 @@ class SigilViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             repository.deleteEntry(alias)
             refreshVault()
-            addLog("Key '$alias' deleted.")
+            addLog("已删除密钥「$alias」。")
             _uiState.update { it.copy(isLoading = false) }
         }
     }
@@ -877,9 +877,9 @@ class SigilViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             if (repository.renameEntry(oldAlias, newAlias)) {
                 refreshVault()
-                addLog("Renamed '$oldAlias' to '$newAlias'.")
+                addLog("已将「$oldAlias」重命名为「$newAlias」。")
             } else {
-                addLog("Error: Rename failed.")
+                addLog("错误：重命名失败（名称可能已存在）。")
             }
             _uiState.update { it.copy(isLoading = false) }
         }
