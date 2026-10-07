@@ -6,6 +6,9 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import dev.animeshvarma.sigil.crypto.CryptoEngine
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
+import java.util.zip.CRC32
 
 /**
  * Steganography helpers: hides data inside the low-order bits of ordinary carriers
@@ -19,9 +22,16 @@ object StegoEngine {
     // since stego capacity is tiny and this is a convenience layer, not the primary vault).
     private val stegoKdf = CryptoEngine.KdfConfig(iterations = 2, memoryPow2 = 14, parallelism = 1)
 
+    // 旧版编码（v1）：仅用于兼容解码。U+200B 在复制/传输中容易被清理，新版不再使用。
     private const val ZW_ZERO = '\u200B' // zero-width space -> bit 0
     private const val ZW_ONE = '\u200C'  // zero-width non-joiner -> bit 1
     private const val ZW_START = '\u200D' // zero-width joiner -> marks payload start
+
+    // 新版编码（v2）：0/1 分别用 U+200C / U+200D，起始符用 U+2060（词连接符），
+    // 并在载荷前后加入 2 字节长度和 2 字节校验，数据缺失或损坏时能明确报错。
+    private const val ZW2_ZERO = '\u200C'
+    private const val ZW2_ONE = '\u200D'
+    private const val ZW2_START = '\u2060'
 
     // --- TEXT STEGANOGRAPHY ---
 
@@ -47,19 +57,64 @@ object StegoEngine {
         } else {
             secret.toByteArray(Charsets.UTF_8)
         }
+        require(payloadBytes.size <= 0xFFFF) { "隐藏内容过长（最多约 64KB）。" }
 
-        val bits = bytesToBits(payloadBytes)
+        val crc = checksum16(payloadBytes)
+        val frame = ByteArrayOutputStream().apply {
+            write((payloadBytes.size shr 8) and 0xFF)
+            write(payloadBytes.size and 0xFF)
+            write(payloadBytes)
+            write((crc shr 8) and 0xFF)
+            write(crc and 0xFF)
+        }.toByteArray()
+
         val sb = StringBuilder(cover)
-        sb.append(ZW_START)
-        for (bit in bits) sb.append(if (bit) ZW_ONE else ZW_ZERO)
+        sb.append(ZW2_START)
+        for (bit in bytesToBits(frame)) sb.append(if (bit) ZW2_ONE else ZW2_ZERO)
         return sb.toString()
     }
 
     /**
      * Extracts a hidden payload from [stego] text, decrypting it with [password] if provided.
      * Returns null if no hidden payload marker is found.
+     * 新版（v2）优先；找不到 v2 起始符时回退到旧版（v1）格式。
      */
     fun decodeText(stego: String, password: String): String? {
+        val v2 = stego.indexOf(ZW2_START)
+        return if (v2 != -1) decodeTextV2(stego, v2, password) else decodeTextLegacy(stego, password)
+    }
+
+    private fun decodeTextV2(stego: String, startIndex: Int, password: String): String? {
+        val bits = mutableListOf<Boolean>()
+        for (i in startIndex + 1 until stego.length) {
+            when (stego[i]) {
+                ZW2_ZERO -> bits.add(false)
+                ZW2_ONE -> bits.add(true)
+                else -> {}
+            }
+        }
+        if (bits.isEmpty()) return null
+
+        val diag = "（检测到：起始符 ${stego.count { it == ZW2_START }} 个，" +
+            "0 位 ${stego.count { it == ZW2_ZERO }} 个，1 位 ${stego.count { it == ZW2_ONE }} 个，" +
+            "共 ${bits.size} 位）"
+        require(bits.size >= 32 && bits.size % 8 == 0) {
+            "隐藏数据不完整：位数不对，部分零宽字符可能在复制或传输中丢失。$diag"
+        }
+
+        val frame = bitsToBytes(bits)
+        val len = ((frame[0].toInt() and 0xFF) shl 8) or (frame[1].toInt() and 0xFF)
+        require(frame.size == len + 4) {
+            "隐藏数据不完整：长度与头部记录不符（应为 ${len + 4} 字节，实际 ${frame.size} 字节）。$diag"
+        }
+        val payload = frame.copyOfRange(2, 2 + len)
+        val crc = ((frame[2 + len].toInt() and 0xFF) shl 8) or (frame[3 + len].toInt() and 0xFF)
+        require(crc == checksum16(payload)) { "隐藏数据校验失败，内容已被改动或损坏。$diag" }
+
+        return payloadToText(payload, password, diag)
+    }
+
+    private fun decodeTextLegacy(stego: String, password: String): String? {
         val startIndex = stego.indexOf(ZW_START)
         if (startIndex == -1) return null
 
@@ -73,8 +128,16 @@ object StegoEngine {
         }
         if (bits.isEmpty()) return null
 
-        val payloadBytes = bitsToBytes(bits)
+        val diag = "（旧格式；检测到：起始符 ${stego.count { it == ZW_START }} 个，" +
+            "0 位 ${stego.count { it == ZW_ZERO }} 个，1 位 ${stego.count { it == ZW_ONE }} 个，" +
+            "共 ${bits.size} 位）"
+        require(bits.size % 8 == 0) {
+            "隐藏数据不完整：位数不是 8 的倍数，部分零宽字符（尤其是 U+200B）可能在复制或传输中丢失。$diag"
+        }
+        return payloadToText(bitsToBytes(bits), password, diag)
+    }
 
+    private fun payloadToText(payloadBytes: ByteArray, password: String, diag: String): String {
         return if (password.isNotBlank()) {
             val pwd = password.toCharArray()
             try {
@@ -89,8 +152,23 @@ object StegoEngine {
                 pwd.fill('\u0000')
             }
         } else {
-            String(payloadBytes, Charsets.UTF_8)
+            try {
+                Charsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(payloadBytes)).toString()
+            } catch (_: java.nio.charset.CharacterCodingException) {
+                throw IllegalArgumentException(
+                    "隐藏数据已损坏，无法还原为文字：可能丢失了零宽字符，或这段内容设置了密码。$diag"
+                )
+            }
         }
+    }
+
+    private fun checksum16(data: ByteArray): Int {
+        val c = CRC32()
+        c.update(data)
+        return (c.value and 0xFFFF).toInt()
     }
 
     // --- IMAGE STEGANOGRAPHY (LSB) ---
