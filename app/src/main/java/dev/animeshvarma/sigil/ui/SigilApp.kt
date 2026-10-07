@@ -31,6 +31,7 @@ import dev.animeshvarma.sigil.ui.screens.CustomEncryptionScreen
 import dev.animeshvarma.sigil.ui.screens.DocsScreen
 import dev.animeshvarma.sigil.ui.screens.EncryptionInterface
 import dev.animeshvarma.sigil.ui.screens.FileEncryptionScreen
+import dev.animeshvarma.sigil.ui.screens.AsymmetricScreen
 import dev.animeshvarma.sigil.ui.screens.KeystoreScreen
 import dev.animeshvarma.sigil.ui.screens.SettingsScreen
 import dev.animeshvarma.sigil.ui.screens.SteganographyScreen
@@ -121,8 +122,8 @@ fun SigilApp(
                             AppScreen.KEYSTORE -> KeystoreScreen(viewModel)
                             AppScreen.SETTINGS -> SettingsScreen(viewModel)
                             AppScreen.FILE_ENCRYPTION -> FileEncryptionScreen(viewModel, uiState)
+                            AppScreen.ASYMMETRIC -> AsymmetricScreen(viewModel)
                             AppScreen.HEADERLESS,
-                            AppScreen.ASYMMETRIC,
                             AppScreen.PARTITIONS -> UnderConstructionView()
                             else -> UnderConstructionView()
                         }
